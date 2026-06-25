@@ -115,6 +115,7 @@ export async function listMessages(
     prisma.mailMessageCache.count({ where }),
     prisma.mailMessageCache.findMany({
       where,
+      include: { folder: { select: { path: true } } },
       orderBy: [{ date: 'desc' }, { uid: 'desc' }],
       skip: (page - 1) * limit,
       take: limit,
@@ -125,6 +126,7 @@ export async function listMessages(
     await syncCachedMessagePreviews(account, config, syncedFolder, messages.map((message) => message.uid));
     const hydratedMessages = await prisma.mailMessageCache.findMany({
       where,
+      include: { folder: { select: { path: true } } },
       orderBy: [{ date: 'desc' }, { uid: 'desc' }],
       skip: (page - 1) * limit,
       take: limit,
@@ -138,7 +140,12 @@ export async function listMessages(
 
 export async function getMessage(userId: string, folder: string, uid: number): Promise<MailMessage | null> {
   const { account, config } = await getAccountContext(userId);
-  const syncedFolder = await ensureFolderSynced(account, config, folder, DEFAULT_VISIBLE_LIMIT);
+  const sourceFolder = folder === 'Starred'
+    ? await findStarredMessageFolder(account.id, uid)
+    : null;
+  const syncedFolder = sourceFolder
+    ? await ensureFolderSynced(account, config, sourceFolder.path, DEFAULT_VISIBLE_LIMIT)
+    : await ensureFolderSynced(account, config, folder, DEFAULT_VISIBLE_LIMIT);
   const uidBigInt = BigInt(uid);
 
   const cached = await prisma.mailMessageCache.findFirst({
@@ -150,6 +157,7 @@ export async function getMessage(userId: string, folder: string, uid: number): P
       isDeleted: false,
       isStale: false,
     },
+    include: { folder: { select: { path: true } } },
   });
 
   if (cached?.bodyState === MailBodyState.FULL || cached?.bodyState === MailBodyState.PARTIAL) {
@@ -722,7 +730,7 @@ async function downloadAndCacheMessage(
       },
     });
 
-    return toMailMessage(updated, true);
+    return { ...toMailMessage(updated, true), folderPath: folder.path };
   });
 }
 
@@ -777,6 +785,7 @@ async function listStarredFromCache(accountId: string, page: number, limit: numb
     prisma.mailMessageCache.count({ where }),
     prisma.mailMessageCache.findMany({
       where,
+      include: { folder: { select: { path: true } } },
       orderBy: [{ date: 'desc' }, { uid: 'desc' }],
       skip: (page - 1) * limit,
       take: limit,
@@ -784,6 +793,22 @@ async function listStarredFromCache(accountId: string, page: number, limit: numb
   ]);
 
   return { total, messages: messages.map(toMailListItem) };
+}
+
+async function findStarredMessageFolder(accountId: string, uid: number): Promise<MailFolder | null> {
+  const message = await prisma.mailMessageCache.findFirst({
+    where: {
+      accountId,
+      uid: BigInt(uid),
+      isStarred: true,
+      isDeleted: false,
+      isStale: false,
+    },
+    include: { folder: true },
+    orderBy: [{ date: 'desc' }],
+  });
+
+  return message?.folder ?? null;
 }
 
 function triggerStaleSync(account: MailAccount, config: ImapConfig, folder: MailFolder): void {
@@ -818,6 +843,7 @@ function toJson(value: unknown): Prisma.InputJsonValue {
 
 function toMailListItem(message: {
   uid: bigint;
+  folder?: { path: string };
   messageId: string | null;
   subject: string;
   from: unknown;
@@ -831,6 +857,7 @@ function toMailListItem(message: {
 }): MailListItem {
   return {
     uid: Number(message.uid),
+    folderPath: message.folder?.path,
     messageId: message.messageId ?? '',
     subject: message.subject,
     from: toAddress(message.from),
@@ -846,6 +873,7 @@ function toMailListItem(message: {
 
 function toMailMessage(message: {
   uid: bigint;
+  folder?: { path: string };
   messageId: string | null;
   subject: string;
   from: unknown;

@@ -43,6 +43,7 @@ export interface MailboxFolder {
 
 export interface MailListItem {
   uid: number;
+  folderPath?: string;
   messageId: string;
   subject: string;
   from: MailAddress;
