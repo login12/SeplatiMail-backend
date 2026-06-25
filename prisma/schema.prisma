@@ -1,0 +1,196 @@
+// This is your Prisma schema file.
+// Learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Usuário do Workspace ─────────────────────────────────────────────────────
+model User {
+  id           String   @id @default(cuid())
+  name         String
+  email        String   @unique
+  passwordHash String   @map("password_hash")
+  role         UserRole @default(USER)
+  isActive     Boolean  @default(true) @map("is_active")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  sessions    Session[]
+  mailAccount MailAccount?
+
+  @@map("users")
+}
+
+enum UserRole {
+  ADMIN
+  USER
+}
+
+// ─── Sessão (Refresh Token) ───────────────────────────────────────────────────
+model Session {
+  id           String   @id @default(cuid())
+  userId       String   @map("user_id")
+  refreshToken String   @unique @map("refresh_token")
+  userAgent    String?  @map("user_agent")
+  ipAddress    String?  @map("ip_address")
+  expiresAt    DateTime @map("expires_at")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("sessions")
+}
+
+// ─── Conta de E-mail (IMAP/SMTP) ─────────────────────────────────────────────
+model MailAccount {
+  id             String  @id @default(cuid())
+  userId         String  @unique @map("user_id")
+  emailAddress   String  @map("email_address")
+  displayName    String? @map("display_name")
+
+  // IMAP
+  imapHost       String  @map("imap_host")
+  imapPort       Int     @map("imap_port")
+  imapSecure     Boolean @default(true) @map("imap_secure")
+
+  // SMTP
+  smtpHost       String  @map("smtp_host")
+  smtpPort       Int     @map("smtp_port")
+  smtpSecure     Boolean @default(true) @map("smtp_secure")
+
+  // Credentials (AES-256-GCM encrypted)
+  encryptedPassword String @map("encrypted_password")
+
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  folders MailFolder[]
+  messages MailMessageCache[]
+  sendJobs MailSendJob[]
+
+  @@map("mail_accounts")
+}
+
+enum MoreMessages {
+  UNKNOWN
+  TRUE
+  FALSE
+}
+
+enum MailBodyState {
+  NONE
+  ENVELOPE
+  PARTIAL
+  FULL
+  STALE
+}
+
+enum MailSyncStatus {
+  IDLE
+  SYNCING
+  ERROR
+}
+
+enum MailSendStatus {
+  QUEUED
+  SENDING
+  APPENDING
+  SENT
+  FAILED
+  APPEND_FAILED
+}
+
+model MailFolder {
+  id              String         @id @default(cuid())
+  accountId       String         @map("account_id")
+  path            String
+  name            String
+  delimiter       String         @default("/")
+  flags           Json?
+  specialUse      String?        @map("special_use")
+  uidValidity     BigInt?        @map("uid_validity")
+  highestKnownUid BigInt         @default(0) @map("highest_known_uid")
+  visibleLimit    Int            @default(40) @map("visible_limit")
+  totalMessages   Int            @default(0) @map("total_messages")
+  moreMessages    MoreMessages   @default(UNKNOWN) @map("more_messages")
+  syncStatus      MailSyncStatus @default(IDLE) @map("sync_status")
+  lastSyncedAt    DateTime?      @map("last_synced_at")
+  lastError       String?        @map("last_error")
+  createdAt       DateTime       @default(now()) @map("created_at")
+  updatedAt       DateTime       @updatedAt @map("updated_at")
+
+  account  MailAccount        @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  messages MailMessageCache[]
+
+  @@unique([accountId, path])
+  @@index([accountId, specialUse])
+  @@map("mail_folders")
+}
+
+model MailMessageCache {
+  id              String        @id @default(cuid())
+  accountId       String        @map("account_id")
+  folderId        String        @map("folder_id")
+  uid             BigInt
+  uidValidity     BigInt        @map("uid_validity")
+  messageId       String?       @map("message_id")
+  subject         String        @default("(no subject)")
+  from            Json
+  to              Json
+  cc              Json?
+  date            DateTime
+  internalDate    DateTime?     @map("internal_date")
+  size            Int?
+  flags           String[]
+  isRead          Boolean       @default(false) @map("is_read")
+  isStarred       Boolean       @default(false) @map("is_starred")
+  hasAttachments  Boolean       @default(false) @map("has_attachments")
+  attachmentCount Int           @default(0) @map("attachment_count")
+  preview         String        @default("")
+  bodyState       MailBodyState @default(NONE) @map("body_state")
+  bodyHtml        String?       @map("body_html")
+  bodyText        String?       @map("body_text")
+  attachments     Json?
+  inReplyTo       String?       @map("in_reply_to")
+  references      String[]
+  isDeleted       Boolean       @default(false) @map("is_deleted")
+  isStale         Boolean       @default(false) @map("is_stale")
+  createdAt       DateTime      @default(now()) @map("created_at")
+  updatedAt       DateTime      @updatedAt @map("updated_at")
+
+  account MailAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  folder  MailFolder  @relation(fields: [folderId], references: [id], onDelete: Cascade)
+
+  @@unique([folderId, uid, uidValidity])
+  @@index([accountId, folderId, date])
+  @@index([accountId, isStarred, date])
+  @@index([folderId, isDeleted, isStale, date])
+  @@map("mail_message_cache")
+}
+
+model MailSendJob {
+  id             String         @id @default(cuid())
+  accountId      String         @map("account_id")
+  status         MailSendStatus @default(QUEUED)
+  payload        Json
+  messageId      String?        @map("message_id")
+  rawMessage     Bytes?         @map("raw_message")
+  error          String?
+  attempts       Int            @default(0)
+  sentAt         DateTime?      @map("sent_at")
+  createdAt      DateTime       @default(now()) @map("created_at")
+  updatedAt      DateTime       @updatedAt @map("updated_at")
+
+  account MailAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@index([accountId, status, createdAt])
+  @@map("mail_send_jobs")
+}
